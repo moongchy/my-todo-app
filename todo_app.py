@@ -2,236 +2,504 @@ import sys
 import json
 import os
 from datetime import datetime, timedelta
-import tkinter as tk
-from tkinter import ttk, messagebox
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+    QLineEdit, QTextEdit, QScrollArea, QFrame, QComboBox, 
+    QDialog, QCheckBox, QMessageBox, QPushButton
+)
 
 DATA_FILE = "tasks_data.json"
+PASTEL_COLORS = [
+    ("#E58A73", "#FFFFFF"), ("#C6A97D", "#FFFFFF"), ("#6FDE81", "#1C1C1E"),
+    ("#C6A8D6", "#1C1C1E"), ("#97CCE3", "#1C1C1E"), ("#72BFE8", "#FFFFFF"),
+    ("#E364E0", "#FFFFFF"), ("#EADB68", "#1C1C1E")
+]
 
-class TodoApp(tk.Tk):
+class CustomTaskRow(QFrame):
+    changed = pyqtSignal()
+    delete_requested = pyqtSignal(object)
+
+    def __init__(self, data, scale_factor, settings, parent=None):
+        super().__init__(parent)
+        self.data = data
+        self.scale_factor = scale_factor
+        self.settings = settings
+        self.init_ui()
+
+    def init_ui(self):
+        f_size = max(10, int(13 * self.scale_factor))
+        meta_size = max(8, int(10 * self.scale_factor))
+        self.setStyleSheet("background: transparent; border-bottom: 0.5px solid #E5E5EA;")
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 6, 4, 6)
+        layout.setSpacing(int(8 * self.scale_factor))
+
+        # 6. 아이폰 메모 스타일 사각 체크박스
+        self.chk = QCheckBox()
+        self.chk.setChecked(self.data.get("completed", False))
+        chk_wh = int(18 * self.scale_factor)
+        self.chk.setStyleSheet(f"""
+            QCheckBox::indicator {{
+                width: {chk_wh}px; height: {chk_wh}px;
+                border: 1.5px solid #C7C7CC; border-radius: 4px; background: #FFFFFF;
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: #E5A100; border-color: #E5A100;
+            }}
+        """)
+        self.chk.toggled.connect(self.on_toggle)
+        layout.addWidget(self.chk)
+
+        # 4 & 5. 줄노트 스타일 텍스트 상시 수정
+        self.line_edit = QLineEdit(self.data.get("text", ""))
+        self.line_edit.setFrame(False)
+        self.line_edit.setFont(QFont("Apple SD Gothic Neo", f_size))
+        self.line_edit.setStyleSheet("background: transparent; border: none; padding: 2px 0;")
+        self.line_edit.textChanged.connect(self.on_text_change)
+        layout.addWidget(self.line_edit, stretch=1)
+
+        # 5 & 7. 오른쪽 2줄 일시 (모듈 커스텀 반영)
+        self.time_label = QLabel()
+        self.time_label.setFont(QFont("Apple SD Gothic Neo", meta_size))
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.time_label.setStyleSheet("color: #8E8E93; background: transparent;")
+        layout.addWidget(self.time_label)
+
+        # 행 삭제 버튼
+        self.btn_del = QPushButton("✕")
+        self.btn_del.setFixedSize(int(20 * self.scale_factor), int(20 * self.scale_factor))
+        self.btn_del.setStyleSheet("QPushButton { border: none; color: #C7C7CC; font-weight: bold; background: transparent; } QPushButton:hover { color: #FF3B30; }")
+        self.btn_del.clicked.connect(lambda: self.delete_requested.emit(self))
+        layout.addWidget(self.btn_del)
+
+        self.update_style()
+        self.update_time_display()
+
+    def on_toggle(self, checked):
+        self.data["completed"] = checked
+        if checked:
+            self.data["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        else:
+            self.data["completed_at"] = None
+        self.update_style()
+        self.update_time_display()
+        self.changed.emit()
+
+    def on_text_change(self, text):
+        self.data["text"] = text
+        self.changed.emit()
+
+    def update_style(self):
+        font = self.line_edit.font()
+        font.setStrikeOut(self.data.get("completed", False))  # 8. 취소선
+        self.line_edit.setFont(font)
+        if self.data.get("completed", False):
+            self.line_edit.setStyleSheet("color: #8E8E93; background: transparent; border: none;")
+        else:
+            if self.data.get("is_tag_header", False):
+                font.setBold(True)
+                self.line_edit.setFont(font)
+                self.line_edit.setStyleSheet("color: #1C1C1E; background: transparent; font-weight: bold; border: none;")
+            else:
+                self.line_edit.setStyleSheet("color: #1C1C1E; background: transparent; border: none;")
+
+    def update_time_display(self):
+        # 2 & 7. 등록 및 완료 날짜 커스텀 렌더링
+        mode = self.settings.get("datetime_mode", "both")  # both, date_only, time_only, none
+        if mode == "none":
+            self.time_label.setText("")
+            return
+
+        def fmt(dt_str):
+            if not dt_str: return ""
+            try:
+                dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
+                if mode == "date_only": return dt.strftime("%Y.%m.%d")
+                if mode == "time_only": return dt.strftime("%H:%M")
+                return dt.strftime("%y.%m.%d %H:%M")
+            except:
+                return dt_str
+
+        lines = []
+        c_str = fmt(self.data.get("created_at"))
+        if c_str: lines.append(f"등록: {c_str}")
+        if self.data.get("completed_at"):
+            d_str = fmt(self.data.get("completed_at"))
+            lines.append(f"완료: {d_str}")
+
+        self.time_label.setText("\n".join(lines))
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("커스텀 모듈 설정")
+        self.setFixedSize(300, 260)
+        self.settings = settings
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        self.chk_tag = QCheckBox("상단 파스텔 태그바 표시")
+        self.chk_tag.setChecked(self.settings.get("show_tags", True))
+        layout.addWidget(self.chk_tag)
+
+        self.chk_memo = QCheckBox("하단 일상 메모장(1/3) 표시")
+        self.chk_memo.setChecked(self.settings.get("show_memo", True))
+        layout.addWidget(self.chk_memo)
+
+        layout.addWidget(QLabel("우측 일시 표시 형식:"))
+        self.combo_dt = QComboBox()
+        self.combo_dt.addItems(["날짜+시간 모두 표시", "날짜만 표시", "시간만 표시", "표시 안 함"])
+        mode_map = {"both": 0, "date_only": 1, "time_only": 2, "none": 3}
+        self.combo_dt.setCurrentIndex(mode_map.get(self.settings.get("datetime_mode", "both"), 0))
+        layout.addWidget(self.combo_dt)
+
+        btn_save = QPushButton("적용 완료")
+        btn_save.setStyleSheet("background: #E5A100; color: white; border-radius: 6px; padding: 8px; font-weight: bold;")
+        btn_save.clicked.connect(self.save_and_close)
+        layout.addWidget(btn_save)
+
+    def save_and_close(self):
+        self.settings["show_tags"] = self.chk_tag.isChecked()
+        self.settings["show_memo"] = self.chk_memo.isChecked()
+        rev_map = {0: "both", 1: "date_only", 2: "time_only", 3: "none"}
+        self.settings["datetime_mode"] = rev_map[self.combo_dt.currentIndex()]
+        self.accept()
+
+
+class ModernTodoApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.title("Todo & Notes")
-        self.geometry("640x720")
-        self.configure(bg="#F2F2F7")
-
-        self.tasks = []
-        self.log_memo = ""
+        self.old_pos = None
+        self.scale_factor = 1.0
         self.load_data()
+        self.init_frameless_window()
+        self.build_ui()
+        self.apply_scale_factor()
 
-        self.setup_ui()
-        self.refresh_task_lists()
+    def init_frameless_window(self):
+        # 1. 윈도우 기본 제목창 및 테두리 제거 (Frameless)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.resize(560, 760)
 
-    def setup_ui(self):
-        # 상단 탭 스타일
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("TNotebook", background="#F2F2F7", borderwidth=0)
-        style.configure("TNotebook.Tab", background="#E3E3E8", padding=[15, 6], font=("Apple SD Gothic Neo", 10, "bold"))
-        style.map("TNotebook.Tab", background=[("selected", "#FFFFFF")])
-
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=16, pady=16)
-
-        # 탭 1: 할 일 목록
-        self.tab_active = tk.Frame(self.notebook, bg="#F2F2F7")
-        self.notebook.add(self.tab_active, text="할 일 목록")
-        self.build_active_tab()
-
-        # 탭 2: 완료된 숙제 보관함
-        self.tab_archive = tk.Frame(self.notebook, bg="#F2F2F7")
-        self.notebook.add(self.tab_archive, text="완료된 숙제함")
-        self.build_archive_tab()
-
-        # 탭 3: 로그 메모장
-        self.tab_memo = tk.Frame(self.notebook, bg="#F2F2F7")
-        self.notebook.add(self.tab_memo, text="로그 메모장")
-        self.build_memo_tab()
-
-    # --- 탭 1: 활성 할 일 화면 ---
-    def build_active_tab(self):
-        # 상단 입력 바
-        input_frame = tk.Frame(self.tab_active, bg="#FFFFFF", padx=10, pady=8)
-        input_frame.pack(fill="x", pady=(0, 10))
-
-        self.entry_task = tk.Entry(input_frame, font=("Apple SD Gothic Neo", 12), relief="flat", bg="#FFFFFF")
-        self.entry_task.pack(side="left", fill="x", expand=True, padx=(5, 10))
-        self.entry_task.bind("<Return>", lambda e: self.add_task())
-
-        btn_add = tk.Button(input_frame, text="등록", bg="#E5A100", fg="#FFFFFF", relief="flat",
-                            font=("Apple SD Gothic Neo", 10, "bold"), padx=12, pady=4,
-                            cursor="hand2", command=self.add_task)
-        btn_add.pack(side="right")
-
-        # 스크롤 가능한 리스트 프레임
-        self.active_scroll_frame = self.create_scrollable_container(self.tab_active)
-
-    # --- 탭 2: 보관함 화면 ---
-    def build_archive_tab(self):
-        self.archive_scroll_frame = self.create_scrollable_container(self.tab_archive)
-
-    # --- 탭 3: 로그 메모장 화면 ---
-    def build_memo_tab(self):
-        memo_frame = tk.Frame(self.tab_memo, bg="#FFFFFF", padx=12, pady=12)
-        memo_frame.pack(fill="both", expand=True)
-
-        self.txt_memo = tk.Text(memo_frame, font=("Apple SD Gothic Neo", 11), relief="flat", wrap="word", bg="#FFFFFF")
-        self.txt_memo.pack(fill="both", expand=True)
-        self.txt_memo.insert("1.0", self.log_memo)
-        self.txt_memo.bind("<KeyRelease>", self.save_memo)
-
-    def create_scrollable_container(self, parent):
-        canvas = tk.Canvas(parent, bg="#F2F2F7", highlightthickness=0)
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg="#F2F2F7")
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw", width=600)
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        return scrollable_frame
-
-    # --- 데이터 처리 로직 ---
-    def add_task(self):
-        text = self.entry_task.get().strip()
-        if not text:
-            return
+    def build_ui(self):
+        # 메인 둥근 배경 컨테이너
+        self.main_container = QFrame(self)
+        self.main_container.setObjectName("MainContainer")
         
-        task = {
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(self.main_container)
+
+        self.root_layout = QVBoxLayout(self.main_container)
+        self.root_layout.setContentsMargins(18, 14, 18, 16)
+        self.root_layout.setSpacing(10)
+
+        # 1. 미니멀 커스텀 타이틀바 (마우스로 창 이동 가능)
+        self.header_bar = QHBoxLayout()
+        self.lbl_title = QLabel("할 일 및 노트")
+        self.lbl_title.setStyleSheet("font-weight: bold; color: #1C1C1E;")
+        self.header_bar.addWidget(self.lbl_title)
+        self.header_bar.addStretch()
+
+        # 2. 커스텀 설정 버튼
+        self.btn_settings = QPushButton("커스텀")
+        self.btn_settings.setStyleSheet("QPushButton { border: 1px solid #D1D1D6; border-radius: 6px; padding: 3px 8px; font-size: 11px; background: white; } QPushButton:hover { background: #F2F2F7; }")
+        self.btn_settings.clicked.connect(self.open_settings)
+        self.header_bar.addWidget(self.btn_settings)
+
+        # 9. 전체 크기 배율 드롭다운 (창 크기 제외 UI 스케일링)
+        self.scale_combo = QComboBox()
+        self.scale_combo.addItems(["80%", "90%", "100%", "110%", "125%", "150%"])
+        self.scale_combo.setCurrentText(f"{int(self.scale_factor * 100)}%")
+        self.scale_combo.setStyleSheet("QComboBox { border: 1px solid #D1D1D6; border-radius: 6px; padding: 2px 6px; font-size: 11px; background: white; }")
+        self.scale_combo.currentTextChanged.connect(self.on_scale_change)
+        self.header_bar.addWidget(self.scale_combo)
+
+        # 미니멀 윈도우 조작 버튼 (최소화, 닫기)
+        btn_min = QPushButton("—")
+        btn_min.setFixedSize(24, 24)
+        btn_min.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 11px; } QPushButton:hover { background: #E5E5EA; border-radius: 12px; }")
+        btn_min.clicked.connect(self.showMinimized)
+        self.header_bar.addWidget(btn_min)
+
+        btn_close = QPushButton("✕")
+        btn_close.setFixedSize(24, 24)
+        btn_close.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 12px; } QPushButton:hover { background: #FF3B30; color: white; border-radius: 12px; }")
+        btn_close.clicked.connect(self.close)
+        self.header_bar.addWidget(btn_close)
+
+        self.root_layout.addLayout(self.header_bar)
+
+        # 10. 파스텔 태그 바 모듈
+        self.tag_scroll = QScrollArea()
+        self.tag_scroll.setWidgetResizable(True)
+        self.tag_scroll.setFixedHeight(38)
+        self.tag_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.tag_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.tag_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        self.tag_widget = QWidget()
+        self.tag_layout = QHBoxLayout(self.tag_widget)
+        self.tag_layout.setContentsMargins(0, 2, 0, 2)
+        self.tag_layout.setSpacing(6)
+        self.tag_scroll.setWidget(self.tag_widget)
+        self.root_layout.addWidget(self.tag_scroll)
+        self.render_tags()
+
+        # 4. 아이폰 메모 스타일 줄노트 영역 (상단 2/3)
+        self.task_scroll = QScrollArea()
+        self.task_scroll.setWidgetResizable(True)
+        self.task_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.task_scroll.setObjectName("CustomScroll")
+        
+        self.task_container = QWidget()
+        self.task_layout = QVBoxLayout(self.task_container)
+        self.task_layout.setContentsMargins(0, 0, 8, 0)
+        self.task_layout.setSpacing(0)
+        self.task_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        self.task_scroll.setWidget(self.task_container)
+        self.root_layout.addWidget(self.task_scroll, stretch=2)
+
+        # 다음 줄 클릭/입력용 빈 노트 유도 줄
+        self.new_line_edit = QLineEdit()
+        self.new_line_edit.setPlaceholderText("+ 다음 줄을 눌러 새 숙제 작성...")
+        self.new_line_edit.setFrame(False)
+        self.new_line_edit.returnPressed.connect(self.commit_new_task)
+        self.root_layout.addWidget(self.new_line_edit)
+
+        # 3. 하단 1/3 일상 메모장
+        self.memo_frame = QFrame()
+        self.memo_frame.setStyleSheet("background: #FAF8F2; border: 1px solid #EAE5D9; border-radius: 12px; padding: 6px;")
+        memo_inner_layout = QVBoxLayout(self.memo_frame)
+        memo_inner_layout.setContentsMargins(6, 6, 6, 6)
+
+        lbl_memo_title = QLabel("일상 메모장")
+        lbl_memo_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #8E8E93;")
+        memo_inner_layout.addWidget(lbl_memo_title)
+
+        self.txt_memo = QTextEdit()
+        self.txt_memo.setFrameShape(QFrame.Shape.NoFrame)
+        self.txt_memo.setStyleSheet("background: transparent; font-family: 'Apple SD Gothic Neo', sans-serif;")
+        self.txt_memo.setPlainText(self.memo_text)
+        self.txt_memo.textChanged.connect(self.on_memo_change)
+        memo_inner_layout.addWidget(self.txt_memo)
+
+        self.root_layout.addWidget(self.memo_frame, stretch=1)
+
+        self.refresh_task_list()
+        self.apply_module_visibility()
+
+    # 마우스 드래그로 무테두리 창 이동
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and event.position().y() < 40:
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if self.old_pos:
+            delta = event.globalPosition().toPoint() - self.old_pos
+            self.move(self.pos() + delta)
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseReleaseEvent(self, event):
+        self.old_pos = None
+
+    # 태그 바 렌더링
+    def render_tags(self):
+        while self.tag_layout.count():
+            item = self.tag_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        for idx, tag_text in enumerate(self.tags):
+            bg_c, fg_c = PASTEL_COLORS[idx % len(PASTEL_COLORS)]
+            tag_box = QFrame()
+            tag_box.setStyleSheet(f"background-color: {bg_c}; border-radius: 12px; padding: 2px 8px;")
+            tb_layout = QHBoxLayout(tag_box)
+            tb_layout.setContentsMargins(4, 2, 4, 2)
+            tb_layout.setSpacing(4)
+
+            btn_tag = QPushButton(f"#{tag_text}")
+            btn_tag.setStyleSheet(f"border: none; color: {fg_c}; font-weight: bold; font-size: 11px; background: transparent;")
+            btn_tag.clicked.connect(lambda _, t=tag_text: self.insert_tag_header(t))
+            tb_layout.addWidget(btn_tag)
+
+            btn_x = QPushButton("✕")
+            btn_x.setStyleSheet(f"border: none; color: {fg_c}; font-size: 10px; background: transparent;")
+            btn_x.clicked.connect(lambda _, t=tag_text: self.confirm_delete_tag(t))
+            tb_layout.addWidget(btn_x)
+
+            self.tag_layout.addWidget(tag_box)
+
+        # 새 태그 추가 버튼 (+)
+        btn_add_tag = QPushButton("+ 태그")
+        btn_add_tag.setStyleSheet("border: 1px dashed #C7C7CC; border-radius: 12px; padding: 2px 10px; font-size: 11px; color: #8E8E93; background: white;")
+        btn_add_tag.clicked.connect(self.prompt_new_tag)
+        self.tag_layout.addWidget(btn_add_tag)
+        self.tag_layout.addStretch()
+
+    def insert_tag_header(self, tag_name):
+        new_row = {
+            "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
+            "text": f"[{tag_name}] ",
+            "completed": False,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "completed_at": None,
+            "is_tag_header": True
+        }
+        self.tasks.insert(0, new_row)
+        self.save_data()
+        self.refresh_task_list()
+
+    def prompt_new_tag(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("새 태그 등록")
+        l = QVBoxLayout(dlg)
+        inp = QLineEdit()
+        inp.setPlaceholderText("태그명을 입력하세요")
+        l.addWidget(inp)
+        btn = QPushButton("추가")
+        btn.clicked.connect(lambda: dlg.accept())
+        l.addWidget(btn)
+        if dlg.exec() and inp.text().strip():
+            self.tags.append(inp.text().strip().replace("#", ""))
+            self.save_data()
+            self.render_tags()
+
+    def confirm_delete_tag(self, tag_name):
+        reply = QMessageBox.question(self, "태그 삭제", f"'{tag_name}' 태그를 삭제하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.tags = [t for t in self.tags if t != tag_name]
+            self.save_data()
+            self.render_tags()
+
+    def commit_new_task(self):
+        text = self.new_line_edit.text().strip()
+        if not text: return
+        self.tasks.append({
             "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
             "text": text,
             "completed": False,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "completed_at": None
-        }
-        self.tasks.insert(0, task)
-        self.entry_task.delete(0, tk.END)
+        })
+        self.new_line_edit.clear()
         self.save_data()
-        self.refresh_task_lists()
+        self.refresh_task_list()
 
-    def toggle_task(self, task):
-        task["completed"] = not task["completed"]
-        if task["completed"]:
-            task["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-        else:
-            task["completed_at"] = None
-        self.save_data()
-        self.refresh_task_lists()
+    def refresh_task_list(self):
+        while self.task_layout.count():
+            item = self.task_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
 
-    def update_task_text(self, task, new_text):
-        if task["text"] != new_text:
-            task["text"] = new_text
-            self.save_data()
-
-    def delete_task(self, task_id):
-        self.tasks = [t for t in self.tasks if t["id"] != task_id]
-        self.save_data()
-        self.refresh_task_lists()
-
-    def refresh_task_lists(self):
-        for widget in self.active_scroll_frame.winfo_children():
-            widget.destroy()
-        for widget in self.archive_scroll_frame.winfo_children():
-            widget.destroy()
-
+        # 4. 하루 지난 항목 자동 보관 처리
         now = datetime.now()
-        one_day = timedelta(days=1)
+        filtered = []
+        for t in self.tasks:
+            if t.get("completed") and t.get("completed_at"):
+                c_time = datetime.strptime(t["completed_at"], "%Y-%m-%d %H:%M")
+                if now - c_time > timedelta(days=1):
+                    continue
+            filtered.append(t)
 
-        active_count = 0
-        archive_count = 0
+        for t_data in filtered:
+            row = CustomTaskRow(t_data, self.scale_factor, self.settings)
+            row.changed.connect(self.save_data)
+            row.delete_requested.connect(self.remove_task_row)
+            self.task_layout.addWidget(row)
 
-        for task in self.tasks:
-            is_done = task["completed"]
-            completed_time = None
-            if is_done and task.get("completed_at"):
-                completed_time = datetime.strptime(task["completed_at"], "%Y-%m-%d %H:%M")
-
-            # 24시간 경과 판정: 완료된 후 하루가 지나면 아카이브(보관함)
-            is_archived = is_done and completed_time and (now - completed_time > one_day)
-
-            target_frame = self.archive_scroll_frame if is_archived else self.active_scroll_frame
-            if is_archived:
-                archive_count += 1
-            else:
-                active_count += 1
-
-            self.render_task_item(target_frame, task)
-
-        if active_count == 0:
-            tk.Label(self.active_scroll_frame, text="할 일이 없습니다.", bg="#F2F2F7", fg="#8E8E93").pack(pady=20)
-        if archive_count == 0:
-            tk.Label(self.archive_scroll_frame, text="완료 후 하루가 지난 숙제가 보관됩니다.", bg="#F2F2F7", fg="#8E8E93").pack(pady=20)
-
-    def render_task_item(self, parent, task):
-        item = tk.Frame(parent, bg="#FFFFFF", padx=10, pady=8)
-        item.pack(fill="x", pady=4, padx=2)
-
-        # 동그라미 체크 토글 버튼 (아이폰 메모 체크박스 대용)
-        check_symbol = "●" if task["completed"] else "○"
-        check_fg = "#E5A100" if task["completed"] else "#C7C7CC"
-        btn_chk = tk.Button(item, text=check_symbol, font=("Arial", 14), fg=check_fg,
-                            relief="flat", bg="#FFFFFF", bd=0, cursor="hand2",
-                            command=lambda t=task: self.toggle_task(t))
-        btn_chk.pack(side="left", padx=(0, 8))
-
-        # 본문 및 메타데이터 컨테이너
-        center = tk.Frame(item, bg="#FFFFFF")
-        center.pack(side="left", fill="x", expand=True)
-
-        # 상시 수정 가능한 Entry (아이폰 메모처럼 즉시 편집 가능)
-        entry_text = tk.Entry(center, font=("Apple SD Gothic Neo", 11), relief="flat", bg="#FFFFFF")
-        entry_text.insert(0, task["text"])
-        entry_text.pack(fill="x")
-
-        # 완료 시 회색 글자 및 취소선 효과 대신 색상 흐림 처리
-        if task["completed"]:
-            entry_text.configure(fg="#8E8E93")
-        else:
-            entry_text.configure(fg="#1C1C1E")
-
-        # 수정 후 포커스 빠질 때 자동 저장
-        entry_text.bind("<FocusOut>", lambda e, t=task, ent=entry_text: self.update_task_text(t, ent.get()))
-
-        # 등록/완료 일시 표시
-        meta_str = f"등록: {task['created_at']}"
-        if task.get("completed_at"):
-            meta_str += f" | 완료: {task['completed_at']}"
-        lbl_meta = tk.Label(center, text=meta_str, font=("Apple SD Gothic Neo", 8), fg="#8E8E93", bg="#FFFFFF", anchor="w")
-        lbl_meta.pack(fill="x")
-
-        # 삭제 버튼
-        btn_del = tk.Button(item, text="✕", font=("Arial", 9), fg="#FF3B30", relief="flat",
-                            bg="#FFFFFF", bd=0, cursor="hand2",
-                            command=lambda tid=task["id"]: self.delete_task(tid))
-        btn_del.pack(side="right", padx=(8, 0))
-
-    def save_memo(self, event=None):
-        self.log_memo = self.txt_memo.get("1.0", tk.END)
+    def remove_task_row(self, row_widget):
+        self.tasks = [t for t in self.tasks if t["id"] != row_widget.data["id"]]
         self.save_data()
+        self.refresh_task_list()
+
+    def on_memo_change(self):
+        self.memo_text = self.txt_memo.toPlainText()
+        self.save_data()
+
+    def on_scale_change(self, text):
+        val = int(text.replace("%", "")) / 100.0
+        self.scale_factor = val
+        self.apply_scale_factor()
+        self.refresh_task_list()
+
+    def apply_scale_factor(self):
+        s = self.scale_factor
+        f_main = max(11, int(13 * s))
+        self.main_container.setStyleSheet(f"""
+            #MainContainer {{
+                background-color: #FFFFFF;
+                border-radius: 16px;
+                border: 1px solid #D1D1D6;
+            }}
+            #CustomScroll QScrollBar:vertical {{
+                border: none;
+                background: transparent;
+                width: {int(5 * s)}px;
+                margin: 0px;
+            }}
+            #CustomScroll QScrollBar::handle:vertical {{
+                background: #C7C7CC;
+                min-height: 20px;
+                border-radius: {int(2.5 * s)}px;
+            }}
+            #CustomScroll QScrollBar::add-line:vertical, #CustomScroll QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """)
+        self.lbl_title.setFont(QFont("Apple SD Gothic Neo", int(14 * s)))
+        self.new_line_edit.setFont(QFont("Apple SD Gothic Neo", f_main))
+        self.new_line_edit.setStyleSheet(f"border-bottom: 1px dashed #D1D1D6; padding: {int(6 * s)}px 2px; color: #8E8E93; background: transparent;")
+        self.txt_memo.setFont(QFont("Apple SD Gothic Neo", f_main))
+
+    def open_settings(self):
+        dlg = SettingsDialog(self.settings, self)
+        if dlg.exec():
+            self.apply_module_visibility()
+            self.save_data()
+            self.refresh_task_list()
+
+    def apply_module_visibility(self):
+        self.tag_scroll.setVisible(self.settings.get("show_tags", True))
+        self.memo_frame.setVisible(self.settings.get("show_memo", True))
 
     def load_data(self):
+        self.tasks = []
+        self.tags = ["코지몬", "피치몬", "제우스", "숙제의 바다", "잘 모르는 피치몬", "잘하네", "약올리는 코지몬", "대단하십니다"]
+        self.memo_text = ""
+        self.settings = {"show_tags": True, "show_memo": True, "datetime_mode": "both"}
+
         if os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.tasks = data.get("tasks", [])
-                    self.log_memo = data.get("memo", "")
-            except Exception:
-                self.tasks = []
-                self.log_memo = ""
+                    d = json.load(f)
+                    self.tasks = d.get("tasks", [])
+                    self.tags = d.get("tags", self.tags)
+                    self.memo_text = d.get("memo", "")
+                    self.settings = d.get("settings", self.settings)
+            except:
+                pass
 
     def save_data(self):
-        data = {
+        d = {
             "tasks": self.tasks,
-            "memo": self.log_memo
+            "tags": self.tags,
+            "memo": self.memo_text,
+            "settings": self.settings
         }
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(d, f, ensure_ascii=False, indent=2)
+
 
 if __name__ == "__main__":
-    app = TodoApp()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    window = ModernTodoApp()
+    window.show()
+    sys.exit(app.exec())
