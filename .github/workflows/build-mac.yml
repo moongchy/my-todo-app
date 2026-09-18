@@ -1,0 +1,51 @@
+name: Build Mac App
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install PyQt6 pyinstaller
+
+      - name: Set Mac data location
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("todo_app_v25_5_calendar.py")
+          text = p.read_text(encoding="utf-8-sig")
+          old = 'DATA_FILE = "tasks_data.json"'
+          new = '''DATA_DIR = os.path.expanduser("~/Library/Application Support/MyHomework")
+          os.makedirs(DATA_DIR, exist_ok=True)
+          DATA_FILE = os.path.join(DATA_DIR, "tasks_data.json")'''
+          assert old in text, "데이터 경로 설정을 찾지 못했습니다."
+          p.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+      - name: Build app
+        run: |
+          python -m PyInstaller --clean --noconfirm --windowed \
+            --name "나만의 숙제 v1.1" todo_app_v25_5_calendar.py
+
+      - name: Zip app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/나만의 숙제 v1.1.app" "MyHomework-mac.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MyHomework-mac
+          path: MyHomework-mac.zip
+          if-no-files-found: error
