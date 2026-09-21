@@ -24,7 +24,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path("todo_app_v25_5_calendar.py")
+          p = Path("todo_app_v25_6_calendar.py")
           text = p.read_text(encoding="utf-8-sig")
           old = 'DATA_FILE = "tasks_data.json"'
           new = '''DATA_DIR = os.path.expanduser("~/Library/Application Support/MyHomework")
@@ -37,12 +37,12 @@ jobs:
       - name: Build app
         run: |
           python -m PyInstaller --clean --noconfirm --windowed \
-            --name "나만의 숙제 v1.1" todo_app_v25_5_calendar.py
+            --name "나만의 숙제 v1.2" todo_app_v25_6_calendar.py
 
       - name: Zip app
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/나만의 숙제 v1.1.app" "MyHomework-mac.zip"
+            "dist/나만의 숙제 v1.2.app" "MyHomework-mac.zip"
 
       - uses: actions/upload-artifact@v7
         with:
