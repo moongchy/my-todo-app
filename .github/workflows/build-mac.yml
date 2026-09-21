@@ -38,9 +38,11 @@ jobs:
             --icon todo.icns \
             --name "나만의 숙제 v1.2" todo_app_v25_7_calendar.py
 
-      - name: Verify signature
-        run: codesign --verify --deep --strict --verbose=2 "dist/나만의 숙제 v1.2.app"
-
+      - name: Sign and verify app
+        run: |
+          codesign --force --deep --sign - "dist/나만의 숙제 v1.2.app"
+          codesign --verify --deep --strict --verbose=2 "dist/나만의 숙제 v1.2.app"
+          
       - name: Zip app
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
